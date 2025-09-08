@@ -1,17 +1,24 @@
 (() => {
   const STORAGE_KEY = 'qr_scans_v1';
 
+  // ===== Ajuste de tamaño del marco =====
+  // Proporción del lado corto del visor usada para el área de escaneo.
+  const SCAN_AREA_FACTOR = 0.60; // 60% (ajústalo a tu gusto: 0.5 - 0.8)
+
   // ----- Estado -----
   let scans = loadScans();
   let html5QrCode = null;
   let running = false;
   let lastText = null;
 
-  // Alternancia de motores: primero probamos con BarcodeDetector si está soportado,
-  // y si no detecta nada en 8s, reiniciamos con el motor JS de la librería.
+  // Motor nativo / alternativo (cambia solo si no detecta nada)
   let useBarcodeDetector = true;
   let hadSuccessfulDecode = false;
   let fallbackTimer = null;
+
+  // Overlay (marco)
+  let overlayEl = null;
+  let overlayFlashTimer = null;
 
   const els = {
     total: document.getElementById('stat-total'),
@@ -91,6 +98,33 @@
     }
   }
 
+  // ===== Marco de escaneo =====
+  function ensureOverlay(){
+    if (!overlayEl) {
+      overlayEl = document.createElement('div');
+      overlayEl.id = 'scan-overlay';
+      // lo añadimos encima del vídeo
+      els.reader.appendChild(overlayEl);
+    }
+    resizeOverlay();
+  }
+
+  function resizeOverlay(){
+    if (!overlayEl) return;
+    const w = els.reader.clientWidth;
+    const h = els.reader.clientHeight;
+    const side = Math.floor(Math.min(w, h) * SCAN_AREA_FACTOR);
+    overlayEl.style.width = side + 'px';
+    overlayEl.style.height = side + 'px';
+  }
+
+  function overlayFlashOk(){
+    if (!overlayEl) return;
+    overlayEl.classList.add('ok');
+    clearTimeout(overlayFlashTimer);
+    overlayFlashTimer = setTimeout(() => overlayEl.classList.remove('ok'), 900);
+  }
+
   // ===== Lógica de escaneos =====
   function addScan(text){
     const allowDup = els.dup.checked;
@@ -112,7 +146,7 @@
     const rows = [['fecha','codigo'], ...scans.map(s => [fmtDate(s.time), s.value])];
     const esc = v => '"' + String(v).replace(/"/g,'""') + '"';
     const csv = rows.map(r => r.map(esc).join(',')).join('\r\n');
-    return '\ufeff' + csv; // BOM para Excel
+    return '\ufeff' + csv;
   }
 
   function downloadCSV(){
@@ -160,19 +194,15 @@
     }
   }
 
-  // Construye el config con preferencias que mejoran la detección
   function buildScanConfig(){
-    const SCAN_AREA_FACTOR = 0.60; // 60% del lado corto
     const qrbox = (viewW, viewH) => Math.floor(Math.min(viewW, viewH) * SCAN_AREA_FACTOR);
-
     return {
       fps: 15,
       qrbox,
       aspectRatio: 3/4,
-      disableFlip: true, // evita espejado que confunde al detector
+      disableFlip: true,
       formatsToSupport: [ Html5QrcodeSupportedFormats.QR_CODE ],
       experimentalFeatures: useBarcodeDetector ? { useBarCodeDetectorIfSupported: true } : {},
-      // Subimos resolución y pedimos foco continuo si el navegador lo soporta
       videoConstraints: {
         width: { ideal: 1280 },
         height: { ideal: 720 },
@@ -192,12 +222,11 @@
       return;
     }
 
-    // iOS: pedir permiso proactivamente mejora los labels y el enfoque inicial
     await requestCameraPermissionOnce();
 
     const deviceId = els.camSel.value || undefined;
     if(!html5QrCode) {
-      html5QrCode = new Html5Qrcode(els.reader.id /* verbose: false */);
+      html5QrCode = new Html5Qrcode(els.reader.id);
     }
 
     const config = buildScanConfig();
@@ -214,7 +243,7 @@
         : 'Cámara iniciada (motor alternativo). Apunta a un QR.'
       );
 
-      // Si en 8s no hay ningún decode, cambiamos de motor automáticamente
+      ensureOverlay(); // crea y dimensiona el marco
       clearTimeout(fallbackTimer);
       fallbackTimer = setTimeout(async () => {
         if (!hadSuccessfulDecode && running) {
@@ -246,6 +275,7 @@
 
   function onScan(decodedText){
     hadSuccessfulDecode = true;
+    overlayFlashOk(); // ✅ se pone verde un instante
     if(decodedText && decodedText !== lastText){
       addScan(decodedText);
       lastText = decodedText;
@@ -267,10 +297,12 @@
         if (typeof html5QrCode.scanFileV2 === 'function') {
           const result = await html5QrCode.scanFileV2(file, /*showImage=*/true);
           hadSuccessfulDecode = true;
+          overlayFlashOk();
           addScan(result.decodedText || String(result));
         } else {
           const text = await html5QrCode.scanFile(file, /*showImage=*/true);
           hadSuccessfulDecode = true;
+          overlayFlashOk();
           addScan(text);
         }
         setMsg('Decodificado desde foto.', 'ok');
@@ -292,6 +324,10 @@
     }
   });
   els.btnRefresh.addEventListener('click', listCameras);
+
+  // Redimensiona el marco cuando cambie el tamaño/orientación
+  window.addEventListener('resize', resizeOverlay);
+  window.addEventListener('orientationchange', () => setTimeout(resizeOverlay, 100));
 
   // Arranque
   renderTable(); updateStats(); listCameras();

@@ -41,9 +41,9 @@
         <div class="fallback card panel">
           <strong>¿La cámara no se activa?</strong>
           <ul>
-            <li>Asegúrate de abrir esta web en <strong>HTTPS</strong> (GitHub Pages ya lo es).</li>
+            <li>Abre esta web en <strong>HTTPS</strong>.</li>
             <li>En iPhone usa <strong>Safari</strong> o <strong>Chrome</strong> (no dentro de apps).</li>
-            <li>Si sigue fallando, usa el plan B: <em>Subir foto</em> del QR.</li>
+            <li>Plan B: <em>Subir foto</em> del QR.</li>
           </ul>
           <label class="btn-secondary" for="file-input">📷 Subir foto del QR</label>
           <input id="file-input" type="file" accept="image/*" capture="environment" style="display:none" />
@@ -76,9 +76,7 @@
     <div>Notas: requiere <span class="code">https://</span> (o <span class="code">localhost</span>) para acceder a la cámara. En iPhone/iPad usa Safari. Si lo abriste desde WhatsApp/Instagram, re-abre el enlace en el navegador del sistema.</div>
   </footer>
 
-  <!-- Librería de escaneo QR (API: constructor con verbose opcional y config en start) -->
   <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
-  <!-- Lógica de la app -->
   <script src="./index.js" defer></script>
 </body>
 </html>

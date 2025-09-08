@@ -7,6 +7,10 @@
   --danger: #ef4444;
   --ok: #22c55e;
   --shadow: 0 10px 30px rgba(0,0,0,.35);
+
+  /* Ajustes del marco de escaneo */
+  --scan-border: 4px;
+  --scan-radius: 14px;
 }
 * { box-sizing: border-box; }
 html, body { height: 100%; }
@@ -42,11 +46,47 @@ button { cursor: pointer; }
 .stats { display: flex; gap: 10px; flex-wrap: wrap; }
 .chip { padding: 8px 10px; border-radius: 999px; background: rgba(255,255,255,.06); border: 1px solid rgba(255,255,255,.08); font-size: .95rem; }
 
-#qr-reader { width: 100%; aspect-ratio: 3/4; background: #000; border-radius: 14px; overflow: hidden; display: grid; place-items: center; }
+#qr-reader { position: relative; width: 100%; aspect-ratio: 3/4; background: #000;
+  border-radius: 14px; overflow: hidden; display: grid; place-items: center; }
 #qr-reader > video { width: 100% !important; height: 100% !important; object-fit: cover; }
 
-.fallback { margin-top: 8px; }
-.fallback .btn-secondary { display: inline-block; text-align: center; cursor: pointer; }
+/* Marco de escaneo (se crea por JS y se coloca centrado encima del vídeo) */
+#scan-overlay {
+  position: absolute;
+  top: 50%; left: 50%;
+  transform: translate(-50%, -50%);
+  width: 60%; height: 60%; /* el tamaño real lo ajusta JS; esto es solo por si acaso */
+  border: var(--scan-border) solid var(--danger);
+  border-radius: var(--scan-radius);
+  pointer-events: none;
+  z-index: 5;
+  box-shadow:
+    0 0 0 9999px rgba(0,0,0,0.35) inset,
+    0 0 18px rgba(239,68,68,0.6);
+}
+#scan-overlay.ok {
+  border-color: var(--ok);
+  box-shadow:
+    0 0 0 9999px rgba(0,0,0,0.25) inset,
+    0 0 22px rgba(34,197,94,0.7);
+}
+
+/* Esquinas “L” opcionales para estética */
+#scan-overlay::before, #scan-overlay::after {
+  content: ""; position: absolute; inset: 0; border-radius: var(--scan-radius);
+  background:
+    linear-gradient(currentColor, currentColor) left top/24px var(--scan-border) no-repeat,
+    linear-gradient(currentColor, currentColor) left top/var(--scan-border) 24px no-repeat,
+    linear-gradient(currentColor, currentColor) right top/24px var(--scan-border) no-repeat,
+    linear-gradient(currentColor, currentColor) right top/var(--scan-border) 24px no-repeat,
+    linear-gradient(currentColor, currentColor) left bottom/24px var(--scan-border) no-repeat,
+    linear-gradient(currentColor, currentColor) left bottom/var(--scan-border) 24px no-repeat,
+    linear-gradient(currentColor, currentColor) right bottom/24px var(--scan-border) no-repeat,
+    linear-gradient(currentColor, currentColor) right bottom/var(--scan-border) 24px no-repeat;
+  color: var(--danger);
+  mix-blend-mode: screen;
+}
+#scan-overlay.ok::before, #scan-overlay.ok::after { color: var(--ok); }
 
 .table-wrap { max-height: 40vh; overflow: auto; border-radius: 12px; border: 1px solid rgba(255,255,255,.08); }
 table { width: 100%; border-collapse: collapse; font-size: .95rem; }
