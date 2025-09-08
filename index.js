@@ -1,9 +1,17 @@
 (() => {
   const STORAGE_KEY = 'qr_scans_v1';
+
+  // ----- Estado -----
   let scans = loadScans();
   let html5QrCode = null;
   let running = false;
   let lastText = null;
+
+  // Alternancia de motores: primero probamos con BarcodeDetector si está soportado,
+  // y si no detecta nada en 8s, reiniciamos con el motor JS de la librería.
+  let useBarcodeDetector = true;
+  let hadSuccessfulDecode = false;
+  let fallbackTimer = null;
 
   const els = {
     total: document.getElementById('stat-total'),
@@ -22,7 +30,7 @@
     msg: document.getElementById('msg'),
   };
 
-  // === Utilidades ===
+  // ===== Utilidades =====
   function loadScans(){
     try { return JSON.parse(localStorage.getItem(STORAGE_KEY)) || []; }
     catch(e){ return []; }
@@ -59,21 +67,20 @@
     els.msg.className = type ? `msg ${type}` : 'msg';
   }
 
+  function ensureSecureContext(){
+    if (location.hostname === 'localhost' || location.hostname === '127.0.0.1') return true;
+    if (window.isSecureContext) return true;
+    setMsg('Esta página debe servirse por HTTPS para usar la cámara.', 'error');
+    els.btnStart.disabled = true;
+    return false;
+  }
+
   function isIOS(){
     const ua = navigator.userAgent || navigator.vendor || window.opera;
     return /iPad|iPhone|iPod/i.test(ua) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
   }
 
-  function ensureSecureContext(){
-    if (location.hostname === 'localhost' || location.hostname === '127.0.0.1') return true;
-    if (window.isSecureContext) return true;
-    setMsg('Esta página debe servirse por HTTPS para usar la cámara. Sube el sitio a GitHub Pages u otro hosting con HTTPS.', 'error');
-    els.btnStart.disabled = true;
-    return false;
-  }
-
   async function requestCameraPermissionOnce(){
-    // En iOS/in-app browsers no hay etiquetas de cámara hasta conceder permiso.
     try {
       const s = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' }, audio: false });
       s.getTracks().forEach(t => t.stop());
@@ -84,7 +91,7 @@
     }
   }
 
-  // === Scans ===
+  // ===== Lógica de escaneos =====
   function addScan(text){
     const allowDup = els.dup.checked;
     if(!allowDup){
@@ -105,7 +112,7 @@
     const rows = [['fecha','codigo'], ...scans.map(s => [fmtDate(s.time), s.value])];
     const esc = v => '"' + String(v).replace(/"/g,'""') + '"';
     const csv = rows.map(r => r.map(esc).join(',')).join('\r\n');
-    return '\ufeff' + csv;
+    return '\ufeff' + csv; // BOM para Excel
   }
 
   function downloadCSV(){
@@ -125,7 +132,6 @@
       const labelsEmpty = devices.length && devices.every(d => !d.label);
 
       if ((!devices.length || labelsEmpty) && navigator.mediaDevices?.getUserMedia) {
-        // Pedimos permiso y reintentamos, típico en iOS.
         await requestCameraPermissionOnce();
         devices = await Html5Qrcode.getCameras();
       }
@@ -145,55 +151,86 @@
         const opt = document.createElement('option');
         opt.value=''; opt.textContent='No hay cámaras detectadas';
         els.camSel.appendChild(opt);
-        setMsg('No se detectan cámaras. Abre la web en Safari/Chrome del sistema (no dentro de apps) y comprueba permisos.', 'error');
+        setMsg('No se detectan cámaras. Abre la web en Safari/Chrome del sistema y comprueba permisos.', 'error');
       } else {
-        setMsg(isIOS() ? 'Si no se inicia, usa Safari y revisa Ajustes > Safari > Cámara.' : '');
+        setMsg(isIOS() ? 'Consejo iOS: usa Safari y revisa Ajustes > Safari > Cámara.' : '');
       }
     } catch(err){
       setMsg('Error al enumerar cámaras: ' + (err?.message || err), 'error');
     }
   }
 
+  // Construye el config con preferencias que mejoran la detección
+  function buildScanConfig(){
+    const SCAN_AREA_FACTOR = 0.60; // 60% del lado corto
+    const qrbox = (viewW, viewH) => Math.floor(Math.min(viewW, viewH) * SCAN_AREA_FACTOR);
+
+    return {
+      fps: 15,
+      qrbox,
+      aspectRatio: 3/4,
+      disableFlip: true, // evita espejado que confunde al detector
+      formatsToSupport: [ Html5QrcodeSupportedFormats.QR_CODE ],
+      experimentalFeatures: useBarcodeDetector ? { useBarCodeDetectorIfSupported: true } : {},
+      // Subimos resolución y pedimos foco continuo si el navegador lo soporta
+      videoConstraints: {
+        width: { ideal: 1280 },
+        height: { ideal: 720 },
+        focusMode: "continuous",
+        advanced: [{ focusMode: "continuous" }]
+      },
+      rememberLastUsedCamera: true
+    };
+  }
+
   async function start(){
     if(running) return;
     if(!ensureSecureContext()) return;
 
-    // Si el navegador no soporta getUserMedia, avisamos y cortamos.
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
       setMsg('Tu navegador no permite usar la cámara (posible navegador dentro de app). Usa Safari/Chrome.', 'error');
       return;
     }
 
-    // En iOS conviene pedir permiso proactivamente antes de iniciar la librería.
+    // iOS: pedir permiso proactivamente mejora los labels y el enfoque inicial
     await requestCameraPermissionOnce();
 
     const deviceId = els.camSel.value || undefined;
     if(!html5QrCode) {
-      // Segundo argumento es "verbose" opcional (booleano). Lo dejamos a false.
-      html5QrCode = new Html5Qrcode(els.reader.id /*, false */);
+      html5QrCode = new Html5Qrcode(els.reader.id /* verbose: false */);
     }
 
-    const config = {
-      fps: 12,
-      qrbox: (viewW, viewH) => Math.floor(Math.min(viewW, viewH) * 0.75),
-      aspectRatio: 3/4,
-      experimentalFeatures: { useBarCodeDetectorIfSupported: true }
-    };
-
+    const config = buildScanConfig();
     const source = deviceId ? { deviceId: { exact: deviceId } } : { facingMode: 'environment' };
 
     try {
+      hadSuccessfulDecode = false;
       await html5QrCode.start(source, config, onScan, onScanFail);
       running = true;
       els.btnStart.disabled = true;
       els.btnStop.disabled = false;
-      setMsg('Cámara iniciada. Apunta a un QR.');
+      setMsg(useBarcodeDetector
+        ? 'Cámara iniciada (motor nativo). Apunta a un QR.'
+        : 'Cámara iniciada (motor alternativo). Apunta a un QR.'
+      );
+
+      // Si en 8s no hay ningún decode, cambiamos de motor automáticamente
+      clearTimeout(fallbackTimer);
+      fallbackTimer = setTimeout(async () => {
+        if (!hadSuccessfulDecode && running) {
+          setMsg('Sin detecciones. Probando motor alternativo…');
+          useBarcodeDetector = !useBarcodeDetector;
+          await restart();
+        }
+      }, 8000);
+
     } catch(err){
       setMsg('No se pudo iniciar la cámara: ' + (err?.message || err), 'error');
     }
   }
 
   async function stop(){
+    clearTimeout(fallbackTimer);
     if(!running || !html5QrCode) return;
     try { await html5QrCode.stop(); } catch(_){}
     running = false;
@@ -202,43 +239,50 @@
     setMsg('Cámara detenida.');
   }
 
+  async function restart(){
+    await stop();
+    await start();
+  }
+
   function onScan(decodedText){
+    hadSuccessfulDecode = true;
     if(decodedText && decodedText !== lastText){
       addScan(decodedText);
       lastText = decodedText;
-      setTimeout(() => { lastText = null; }, 1500);
+      setTimeout(() => { lastText = null; }, 1200);
     }
   }
   function onScanFail(){ /* silencioso por frame fallido */ }
 
-  // === Fallback: subir imagen y decodificar ===
-  els.fileInput.addEventListener('change', async (ev) => {
-    const file = ev.target.files?.[0];
-    if(!file) return;
+  // ===== Fallback: subir imagen y decodificar =====
+  if (els.fileInput) {
+    els.fileInput.addEventListener('change', async (ev) => {
+      const file = ev.target.files?.[0];
+      if(!file) return;
 
-    // Si la cámara está activa, la paramos (la API lo recomienda).
-    if (running) await stop();
+      if (running) await stop();
 
-    try {
-      if(!html5QrCode) html5QrCode = new Html5Qrcode(els.reader.id);
-      // scanFile / scanFileV2: API documentada por la propia librería
-      if (typeof html5QrCode.scanFileV2 === 'function') {
-        const result = await html5QrCode.scanFileV2(file, /*showImage=*/true);
-        addScan(result.decodedText || String(result));
-      } else {
-        const text = await html5QrCode.scanFile(file, /*showImage=*/true);
-        addScan(text);
+      try {
+        if(!html5QrCode) html5QrCode = new Html5Qrcode(els.reader.id);
+        if (typeof html5QrCode.scanFileV2 === 'function') {
+          const result = await html5QrCode.scanFileV2(file, /*showImage=*/true);
+          hadSuccessfulDecode = true;
+          addScan(result.decodedText || String(result));
+        } else {
+          const text = await html5QrCode.scanFile(file, /*showImage=*/true);
+          hadSuccessfulDecode = true;
+          addScan(text);
+        }
+        setMsg('Decodificado desde foto.', 'ok');
+      } catch (err) {
+        setMsg('No se pudo decodificar la imagen: ' + (err?.message || err), 'error');
+      } finally {
+        ev.target.value = '';
       }
-      setMsg('Decodificado desde foto.', 'ok');
-    } catch (err) {
-      setMsg('No se pudo decodificar la imagen: ' + (err?.message || err), 'error');
-    } finally {
-      // Limpia el input para permitir repetir
-      ev.target.value = '';
-    }
-  });
+    });
+  }
 
-  // === Eventos UI ===
+  // ===== Eventos UI =====
   els.btnStart.addEventListener('click', start);
   els.btnStop.addEventListener('click', stop);
   els.btnExport.addEventListener('click', downloadCSV);
