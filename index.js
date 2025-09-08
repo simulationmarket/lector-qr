@@ -18,10 +18,11 @@
     dup: document.getElementById('dup'),
     camSel: document.getElementById('camera-select'),
     reader: document.getElementById('qr-reader'),
+    fileInput: document.getElementById('file-input'),
     msg: document.getElementById('msg'),
   };
 
-  // --- Utilidades
+  // === Utilidades ===
   function loadScans(){
     try { return JSON.parse(localStorage.getItem(STORAGE_KEY)) || []; }
     catch(e){ return []; }
@@ -71,10 +72,10 @@
     return false;
   }
 
-  async function requestCamPermissionForLabels(){
-    // En iOS algunos navegadores no muestran labels ni cámaras hasta conceder permiso.
+  async function requestCameraPermissionOnce(){
+    // En iOS/in-app browsers no hay etiquetas de cámara hasta conceder permiso.
     try {
-      const s = await navigator.mediaDevices.getUserMedia({ video: true });
+      const s = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' }, audio: false });
       s.getTracks().forEach(t => t.stop());
       return true;
     } catch (e) {
@@ -83,12 +84,12 @@
     }
   }
 
-  // --- Lógica de escaneos
+  // === Scans ===
   function addScan(text){
     const allowDup = els.dup.checked;
     if(!allowDup){
       const exists = scans.some(s => s.value === text);
-      if(exists) return; // ignora duplicado
+      if(exists) return;
     }
     const item = { time: new Date().toISOString(), value: text };
     scans.unshift(item);
@@ -104,7 +105,7 @@
     const rows = [['fecha','codigo'], ...scans.map(s => [fmtDate(s.time), s.value])];
     const esc = v => '"' + String(v).replace(/"/g,'""') + '"';
     const csv = rows.map(r => r.map(esc).join(',')).join('\r\n');
-    return '\ufeff' + csv; // BOM para Excel
+    return '\ufeff' + csv;
   }
 
   function downloadCSV(){
@@ -121,11 +122,11 @@
   async function listCameras(){
     try {
       let devices = await Html5Qrcode.getCameras();
-
-      // Si no hay cámaras o los labels vienen vacíos (común en iOS), pide permiso una vez y reintenta
       const labelsEmpty = devices.length && devices.every(d => !d.label);
+
       if ((!devices.length || labelsEmpty) && navigator.mediaDevices?.getUserMedia) {
-        await requestCamPermissionForLabels();
+        // Pedimos permiso y reintentamos, típico en iOS.
+        await requestCameraPermissionOnce();
         devices = await Html5Qrcode.getCameras();
       }
 
@@ -137,7 +138,6 @@
         els.camSel.appendChild(opt);
       });
 
-      // Selecciona trasera si se identifica
       const back = devices.find(d => /back|rear|trase|environment/i.test(d.label || ''));
       if(back) els.camSel.value = back.id;
 
@@ -145,9 +145,9 @@
         const opt = document.createElement('option');
         opt.value=''; opt.textContent='No hay cámaras detectadas';
         els.camSel.appendChild(opt);
-        setMsg('No se detectan cámaras. Asegúrate de abrir la web en HTTPS y con un navegador compatible (Safari en iOS, Chrome en Android). Evita navegadores dentro de apps.', 'error');
+        setMsg('No se detectan cámaras. Abre la web en Safari/Chrome del sistema (no dentro de apps) y comprueba permisos.', 'error');
       } else {
-        setMsg(isIOS() ? 'Consejo iOS: si no enciende, abre en Safari (no dentro de apps) y revisa Ajustes > Safari > Cámara.' : '');
+        setMsg(isIOS() ? 'Si no se inicia, usa Safari y revisa Ajustes > Safari > Cámara.' : '');
       }
     } catch(err){
       setMsg('Error al enumerar cámaras: ' + (err?.message || err), 'error');
@@ -158,17 +158,26 @@
     if(running) return;
     if(!ensureSecureContext()) return;
 
+    // Si el navegador no soporta getUserMedia, avisamos y cortamos.
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      setMsg('Tu navegador no permite usar la cámara (posible navegador dentro de app). Usa Safari/Chrome.', 'error');
+      return;
+    }
+
+    // En iOS conviene pedir permiso proactivamente antes de iniciar la librería.
+    await requestCameraPermissionOnce();
+
     const deviceId = els.camSel.value || undefined;
     if(!html5QrCode) {
-      // Solo QR (más rápido). El video se crea dentro del #qr-reader.
-      html5QrCode = new Html5Qrcode(els.reader.id, { formatsToSupport: [ Html5QrcodeSupportedFormats.QR_CODE ] });
+      // Segundo argumento es "verbose" opcional (booleano). Lo dejamos a false.
+      html5QrCode = new Html5Qrcode(els.reader.id /*, false */);
     }
 
     const config = {
       fps: 12,
       qrbox: (viewW, viewH) => Math.floor(Math.min(viewW, viewH) * 0.75),
       aspectRatio: 3/4,
-      experimentalFeatures: { useBarCodeDetectorIfSupported: true } // acelera en Android modernos
+      experimentalFeatures: { useBarCodeDetectorIfSupported: true }
     };
 
     const source = deviceId ? { deviceId: { exact: deviceId } } : { facingMode: 'environment' };
@@ -193,16 +202,43 @@
     setMsg('Cámara detenida.');
   }
 
-  function onScan(decodedText /*, result */){
+  function onScan(decodedText){
     if(decodedText && decodedText !== lastText){
       addScan(decodedText);
       lastText = decodedText;
-      setTimeout(() => { lastText = null; }, 1500); // permite reescanear tras 1.5s
+      setTimeout(() => { lastText = null; }, 1500);
     }
   }
-  function onScanFail(/* err */){ /* silencioso por frame fallido */ }
+  function onScanFail(){ /* silencioso por frame fallido */ }
 
-  // --- Eventos UI
+  // === Fallback: subir imagen y decodificar ===
+  els.fileInput.addEventListener('change', async (ev) => {
+    const file = ev.target.files?.[0];
+    if(!file) return;
+
+    // Si la cámara está activa, la paramos (la API lo recomienda).
+    if (running) await stop();
+
+    try {
+      if(!html5QrCode) html5QrCode = new Html5Qrcode(els.reader.id);
+      // scanFile / scanFileV2: API documentada por la propia librería
+      if (typeof html5QrCode.scanFileV2 === 'function') {
+        const result = await html5QrCode.scanFileV2(file, /*showImage=*/true);
+        addScan(result.decodedText || String(result));
+      } else {
+        const text = await html5QrCode.scanFile(file, /*showImage=*/true);
+        addScan(text);
+      }
+      setMsg('Decodificado desde foto.', 'ok');
+    } catch (err) {
+      setMsg('No se pudo decodificar la imagen: ' + (err?.message || err), 'error');
+    } finally {
+      // Limpia el input para permitir repetir
+      ev.target.value = '';
+    }
+  });
+
+  // === Eventos UI ===
   els.btnStart.addEventListener('click', start);
   els.btnStop.addEventListener('click', stop);
   els.btnExport.addEventListener('click', downloadCSV);
