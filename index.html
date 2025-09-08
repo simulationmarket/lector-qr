@@ -5,64 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <title>Lector QR móvil — Exportar a Excel (CSV)</title>
   <meta name="theme-color" content="#0ea5e9" />
-  <style>
-    :root {
-      --bg: #0b1020;
-      --card: #111833;
-      --ink: #e6f0ff;
-      --muted: #9fb0ce;
-      --accent: #0ea5e9; /* cyan */
-      --danger: #ef4444; /* red */
-      --ok: #22c55e; /* green */
-      --shadow: 0 10px 30px rgba(0,0,0,.35);
-    }
-    * { box-sizing: border-box; }
-    html, body { height: 100%; }
-    body {
-      margin: 0; font-family: system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, Noto Sans, sans-serif;
-      background: radial-gradient(1200px 800px at 80% -10%, rgba(14,165,233,.15), transparent 60%), var(--bg);
-      color: var(--ink);
-    }
-    .wrap { max-width: 800px; margin: 0 auto; padding: 16px; }
-    header { position: sticky; top: 0; z-index: 20; background: linear-gradient(180deg, rgba(11,16,32,0.95), rgba(11,16,32,0.75)); backdrop-filter: saturate(140%) blur(6px); padding: 12px 16px; border-bottom: 1px solid rgba(255,255,255,.06); }
-    h1 { margin: 0; font-size: 1.2rem; letter-spacing: .2px; }
-    .sub { color: var(--muted); font-size: .9rem; margin-top: 4px; }
-
-    .card { background: linear-gradient(180deg, rgba(255,255,255,.03), rgba(255,255,255,.02)); border: 1px solid rgba(255,255,255,.08); border-radius: 16px; box-shadow: var(--shadow); }
-    .panel { padding: 14px; }
-
-    .grid { display: grid; gap: 12px; }
-    @media (min-width: 700px){ .grid-cols-2 { grid-template-columns: 2fr 1fr; } }
-
-    .controls { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-    .controls > * { min-height: 44px; }
-
-    button, select, input[type="checkbox"] + label {
-      font-size: 1rem; border-radius: 12px; border: 1px solid rgba(255,255,255,.12);
-      background: linear-gradient(180deg, rgba(255,255,255,.02), rgba(255,255,255,.01)); color: var(--ink);
-      padding: 10px 12px; box-shadow: var(--shadow);
-    }
-    button { cursor: pointer; }
-    .btn-primary { border-color: rgba(14,165,233,.5); background: linear-gradient(180deg, rgba(14,165,233,.18), rgba(14,165,233,.12)); }
-    .btn-danger { border-color: rgba(239,68,68,.45); background: linear-gradient(180deg, rgba(239,68,68,.18), rgba(239,68,68,.12)); }
-    .btn-secondary { opacity: .95; }
-
-    .stats { display: flex; gap: 10px; flex-wrap: wrap; }
-    .chip { padding: 8px 10px; border-radius: 999px; background: rgba(255,255,255,.06); border: 1px solid rgba(255,255,255,.08); font-size: .95rem; }
-
-    #qr-reader { width: 100%; aspect-ratio: 3/4; background: #000; border-radius: 14px; overflow: hidden; display: grid; place-items: center; }
-    #qr-reader > video { width: 100% !important; height: 100% !important; object-fit: cover; }
-
-    .table-wrap { max-height: 40vh; overflow: auto; border-radius: 12px; border: 1px solid rgba(255,255,255,.08); }
-    table { width: 100%; border-collapse: collapse; font-size: .95rem; }
-    thead { position: sticky; top: 0; background: rgba(14,165,233,.12); }
-    th, td { padding: 10px 12px; border-bottom: 1px solid rgba(255,255,255,.06); text-align: left; }
-    tbody tr:hover { background: rgba(255,255,255,.03); }
-    .code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; background: rgba(255,255,255,.06); padding: 2px 6px; border-radius: 8px; }
-
-    footer { color: var(--muted); font-size: .85rem; margin: 14px 0 40px; }
-    .note { margin-top: 8px; }
-  </style>
+  <link rel="stylesheet" href="./styles.css">
 </head>
 <body>
   <header class="wrap">
@@ -94,6 +37,7 @@
         <div id="qr-reader" class="card" aria-label="Visor de cámara">
           <span style="opacity:.6">Pulsa <strong>Iniciar cámara</strong> para empezar</span>
         </div>
+        <div id="msg" class="msg" role="status" aria-live="polite"></div>
       </div>
     </section>
 
@@ -117,171 +61,12 @@
   </main>
 
   <footer class="wrap">
-    <div>Notas: requiere servir la página bajo <span class="code">https://</span> (o <span class="code">localhost</span>) para acceder a la cámara. En iPhone/iPad usa Safari.</div>
+    <div>Notas: requiere servir la página bajo <span class="code">https://</span> (o <span class="code">localhost</span>) para acceder a la cámara. En iPhone/iPad usa Safari (evita navegadores dentro de apps como WhatsApp/Instagram).</div>
   </footer>
 
-  <!-- Librería de escaneo QR: html5-qrcode -->
+  <!-- Librería de escaneo QR -->
   <script src="https://unpkg.com/html5-qrcode@2.3.10/html5-qrcode.min.js"></script>
-
-  <script>
-  (function(){
-    const STORAGE_KEY = 'qr_scans_v1';
-    let scans = loadScans();
-    let html5QrCode = null;
-    let running = false;
-    let lastText = null;
-
-    const els = {
-      total: document.getElementById('stat-total'),
-      unique: document.getElementById('stat-unique'),
-      last: document.getElementById('stat-last'),
-      tbody: document.getElementById('tbody'),
-      btnStart: document.getElementById('btn-start'),
-      btnStop: document.getElementById('btn-stop'),
-      btnExport: document.getElementById('btn-export'),
-      btnClear: document.getElementById('btn-clear'),
-      btnRefresh: document.getElementById('btn-refresh'),
-      dup: document.getElementById('dup'),
-      camSel: document.getElementById('camera-select'),
-      reader: document.getElementById('qr-reader'),
-    };
-
-    function loadScans(){
-      try { return JSON.parse(localStorage.getItem(STORAGE_KEY)) || []; }
-      catch(e){ return []; }
-    }
-    function saveScans(){
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(scans));
-    }
-
-    function updateStats(){
-      els.total.textContent = scans.length;
-      const uniq = new Set(scans.map(s => s.value)).size;
-      els.unique.textContent = uniq;
-      els.last.textContent = scans.length ? scans[0].value.slice(0,120) : '—';
-    }
-
-    function renderTable(){
-      els.tbody.innerHTML = scans.map(s => `<tr><td>${fmtDate(s.time)}</td><td class="code">${escapeHtml(s.value)}</td></tr>`).join('');
-    }
-
-    function fmtDate(iso){
-      try {
-        const d = new Date(iso);
-        const pad = n => String(n).padStart(2,'0');
-        return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
-      } catch(e){ return iso; }
-    }
-
-    function escapeHtml(s){
-      return String(s).replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;','\'':'&#39;'}[m]));
-    }
-
-    function addScan(text){
-      const allowDup = els.dup.checked;
-      if(!allowDup){
-        const exists = scans.some(s => s.value === text);
-        if(exists) return; // ignora duplicado
-      }
-      const item = { time: new Date().toISOString(), value: text };
-      scans.unshift(item);
-      saveScans();
-      updateStats();
-      // prepend row for mejor rendimiento
-      const row = document.createElement('tr');
-      row.innerHTML = `<td>${fmtDate(item.time)}</td><td class="code">${escapeHtml(item.value)}</td>`;
-      els.tbody.prepend(row);
-      // feedback haptics (si móvil soporta)
-      if('vibrate' in navigator) navigator.vibrate(30);
-    }
-
-    function toCSV(){
-      const rows = [['fecha','codigo'], ...scans.map(s => [fmtDate(s.time), s.value])];
-      const esc = v => '"' + String(v).replace(/"/g,'""') + '"';
-      const csv = rows.map(r => r.map(esc).join(',')).join('\r\n');
-      // BOM para Excel
-      return '\ufeff' + csv;
-    }
-
-    function downloadCSV(){
-      const csv = toCSV();
-      const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      const stamp = new Date().toISOString().replace(/[:.]/g,'-');
-      a.href = url; a.download = `scans-${stamp}.csv`;
-      document.body.appendChild(a); a.click();
-      setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 0);
-    }
-
-    async function listCameras(){
-      try {
-        const devices = await Html5Qrcode.getCameras();
-        els.camSel.innerHTML = '';
-        devices.forEach((d,i) => {
-          const opt = document.createElement('option');
-          opt.value = d.id; opt.textContent = d.label || `Cámara ${i+1}`;
-          els.camSel.appendChild(opt);
-        });
-        // Intenta seleccionar la trasera
-        const back = devices.find(d => /back|rear|trase|environment/i.test(d.label));
-        if(back) els.camSel.value = back.id;
-        if(devices.length === 0){
-          const opt = document.createElement('option');
-          opt.value=''; opt.textContent='No hay cámaras detectadas';
-          els.camSel.appendChild(opt);
-        }
-      } catch(err){ alert('No se pudieron enumerar cámaras: ' + err); }
-    }
-
-    async function start(){
-      if(running) return;
-      const deviceId = els.camSel.value || undefined;
-      if(!html5QrCode) html5QrCode = new Html5Qrcode(els.reader.id, { formatsToSupport: [ Html5QrcodeSupportedFormats.QR_CODE ] });
-      const config = { fps: 12, qrbox: (viewW, viewH) => Math.floor(Math.min(viewW, viewH) * 0.75), aspectRatio: 3/4, experimentalFeatures: { useBarCodeDetectorIfSupported: true } };
-      const source = deviceId ? { deviceId: { exact: deviceId } } : { facingMode: 'environment' };
-      try {
-        await html5QrCode.start(source, config, onScan, onScanFail);
-        running = true;
-        els.btnStart.disabled = true; els.btnStop.disabled = false;
-      } catch(err){ alert('No se pudo iniciar la cámara: ' + err); }
-    }
-
-    async function stop(){
-      if(!running || !html5QrCode) return;
-      try { await html5QrCode.stop(); } catch(_){}
-      running = false;
-      els.btnStart.disabled = false; els.btnStop.disabled = true;
-    }
-
-    function onScan(decodedText, result){
-      // Evita flood por frames repetidos
-      if(decodedText && decodedText !== lastText){
-        addScan(decodedText);
-        lastText = decodedText;
-        // Resetea after 1.5s para permitir mismo código de nuevo si dup está ON
-        setTimeout(() => { lastText = null; }, 1500);
-      }
-    }
-    function onScanFail(err){ /* silenciar errores de frame */ }
-
-    // Eventos UI
-    els.btnStart.addEventListener('click', start);
-    els.btnStop.addEventListener('click', stop);
-    els.btnExport.addEventListener('click', downloadCSV);
-    els.btnClear.addEventListener('click', () => {
-      if(confirm('¿Seguro que quieres borrar TODOS los escaneos guardados?')){
-        scans = []; saveScans(); renderTable(); updateStats();
-      }
-    });
-    els.btnRefresh.addEventListener('click', listCameras);
-
-    // Arranque
-    renderTable(); updateStats(); listCameras();
-
-    // Limpieza al salir
-    window.addEventListener('pagehide', stop);
-  })();
-  </script>
+  <!-- Tu lógica -->
+  <script src="./app.js" defer></script>
 </body>
 </html>
