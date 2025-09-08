@@ -61,7 +61,6 @@
     setMsg('Esta página debe servirse por HTTPS para usar la cámara.', 'error');
     els.btnStart.disabled = true; return false;
   }
-
   async function requestCameraPermissionOnce(){
     try { const s = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' }, audio: false }); s.getTracks().forEach(t => t.stop()); return true; }
     catch { setMsg('No se pudo obtener permiso de cámara. Revisa los permisos del navegador.', 'error'); return false; }
@@ -85,12 +84,9 @@
 
   // ---- Gestión de cámaras
   function guessBackIndex(list){
-    // 1) por etiqueta clara
     const i1 = list.findIndex(d => /back|rear|environment|trase|trasera/i.test(d.label || ''));
     if (i1 >= 0) return i1;
-    // 2) si hay 2 cámaras, suele ser [front, back] o [back, front] según dispositivo → probamos la ÚLTIMA
-    if (list.length >= 2) return list.length - 1;
-    // 3) fallback
+    if (list.length >= 2) return list.length - 1; // heurística habitual
     return 0;
   }
 
@@ -115,22 +111,31 @@
       if(!devices.length){
         const opt = document.createElement('option'); opt.value=''; opt.textContent='No hay cámaras detectadas'; els.camSel.appendChild(opt);
         setMsg('No se detectan cámaras. Abre la web en el navegador del sistema y comprueba permisos.', 'error');
-      } else {
-        setMsg('');
-      }
+      } else { setMsg(''); }
     } catch(err){
       setMsg('Error al enumerar cámaras: ' + (err?.message || err), 'error');
     }
   }
 
-  async function flipCamera(){
-    if (devices.length <= 1) { setMsg('Sólo hay una cámara disponible.', 'error'); return; }
-    currentCamIndex = (currentCamIndex + 1) % devices.length;
-    els.camSel.value = devices[currentCamIndex].id;
-    if (running) await restart();
+  // ---- Construimos una lista de CANDIDATOS para forzar la trasera
+  function buildPreferredSources(){
+    const sources = [];
+    // 1) facingMode exact environment (si el agente lo respeta)
+    sources.push({ type: 'facing', value: { facingMode: { exact: 'environment' } }, why: 'facingMode exact environment' });
+    // 2) deviceId que parece trasero
+    if (devices.length) {
+      const backIdx = guessBackIndex(devices);
+      if (backIdx >= 0) sources.push({ type: 'device', value: { deviceId: { exact: devices[backIdx].id } }, why: `deviceId back guess (${devices[backIdx].label || 'sin etiqueta'})` });
+    }
+    // 3) resto de deviceIds (por si la heurística falla), probando del último al primero
+    devices.slice().reverse().forEach(d => sources.push({ type: 'device', value: { deviceId: { exact: d.id } }, why: `deviceId fallback (${d.label || 'sin etiqueta'})` }));
+    // 4) facingMode environment no exact (algunos navegadores lo mapean a trasera)
+    sources.push({ type: 'facing', value: { facingMode: 'environment' }, why: 'facingMode environment' });
+    // 5) último recurso: sin preferencia
+    sources.push({ type: 'facing', value: { facingMode: 'user' }, why: 'fallback user (último recurso)' });
+    return sources;
   }
 
-  // ---- Config y arranque
   function buildScanConfig(){
     const qrbox = (viewW, viewH) => Math.floor(Math.min(viewW, viewH) * SCAN_AREA_FACTOR);
     return {
@@ -148,40 +153,77 @@
     };
   }
 
+  function getCurrentVideoFacingInfo(){
+    try {
+      const video = els.reader.querySelector('video');
+      const track = video?.srcObject?.getVideoTracks?.()[0];
+      const settings = track?.getSettings?.() || {};
+      const label = track?.label || '';
+      return { facing: settings.facingMode || '', label };
+    } catch { return { facing:'', label:'' }; }
+  }
+
+  async function tryStartSequence(){
+    const config = buildScanConfig();
+    const sources = buildPreferredSources();
+
+    if(!html5QrCode) html5QrCode = new Html5Qrcode(els.reader.id);
+
+    for (let i = 0; i < sources.length; i++){
+      const cand = sources[i];
+      try {
+        await html5QrCode.start(cand.value, config, onScan, onScanFail);
+        running = true;
+        els.btnStart.disabled = true; els.btnStop.disabled = false;
+        ensureOverlay();
+
+        // ¿Se abrió frontal por error? Lo comprobamos y, si es así, paramos y probamos el siguiente.
+        const info = getCurrentVideoFacingInfo();
+        const looksFront = /user|front/i.test(info.facing || '') || /front/i.test(info.label || '');
+        setMsg(`Cámara iniciada (${cand.why}) → track: ${info.label || 'sin etiqueta'} ${info.facing ? `[${info.facing}]` : ''}`);
+
+        if (looksFront && i < sources.length - 1) {
+          await stop(); // cerrar para intentar la siguiente
+          continue;
+        }
+
+        // éxito: configuramos flip/select según el track actual
+        updateCurrentIndexFromTrackLabel(info.label);
+        scheduleEngineFallback();
+        return; // salimos: ya estamos funcionando con trasera (o la mejor posible)
+      } catch (err) {
+        // Intento fallido → probamos el siguiente candidato
+        if (i === sources.length - 1) {
+          setMsg('No se pudo iniciar la cámara con ningún modo: ' + (err?.message || err), 'error');
+        }
+      }
+    }
+  }
+
+  function updateCurrentIndexFromTrackLabel(label){
+    if (!label) return;
+    const idx = devices.findIndex(d => (d.label||'') === label);
+    if (idx >= 0) { currentCamIndex = idx; els.camSel.value = devices[idx].id; }
+  }
+
+  function scheduleEngineFallback(){
+    hadSuccessfulDecode = false;
+    clearTimeout(fallbackTimer);
+    fallbackTimer = setTimeout(async () => {
+      if (!hadSuccessfulDecode && running) {
+        setMsg('Sin detecciones. Probando motor alternativo…');
+        useBarcodeDetector = !useBarcodeDetector;
+        await restart();
+      }
+    }, 8000);
+  }
+
   async function start(){
     if(running) return;
     if(!ensureSecureContext()) return;
-
-    if (!navigator.mediaDevices?.getUserMedia) {
-      setMsg('Tu navegador no permite usar la cámara (posible navegador dentro de app). Usa Safari/Chrome.', 'error'); return;
-    }
-
+    if (!navigator.mediaDevices?.getUserMedia) { setMsg('Tu navegador no permite usar la cámara. Usa Safari/Chrome.', 'error'); return; }
     await requestCameraPermissionOnce();
-
-    const selectedId = els.camSel.value || (devices[currentCamIndex]?.id);
-    if(!html5QrCode) html5QrCode = new Html5Qrcode(els.reader.id);
-
-    const config = buildScanConfig();
-    const source = selectedId ? { deviceId: { exact: selectedId } } : { facingMode: 'environment' };
-
-    try {
-      hadSuccessfulDecode = false;
-      await html5QrCode.start(source, config, onScan, onScanFail);
-      running = true;
-      els.btnStart.disabled = true; els.btnStop.disabled = false;
-      ensureOverlay(); setMsg(useBarcodeDetector ? 'Cámara iniciada (motor nativo).' : 'Cámara iniciada (motor alternativo).');
-
-      clearTimeout(fallbackTimer);
-      fallbackTimer = setTimeout(async () => {
-        if (!hadSuccessfulDecode && running) {
-          setMsg('Sin detecciones. Probando motor alternativo…');
-          useBarcodeDetector = !useBarcodeDetector;
-          await restart();
-        }
-      }, 8000);
-    } catch(err){
-      setMsg('No se pudo iniciar la cámara: ' + (err?.message || err), 'error');
-    }
+    await tryStartSequence();
   }
 
   async function stop(){
@@ -230,9 +272,15 @@
   els.btnExport.addEventListener('click', downloadCSV);
   els.btnClear.addEventListener('click', () => { if(confirm('¿Seguro que quieres borrar TODOS los escaneos?')){ scans = []; saveScans(); renderTable(); updateStats(); } });
   els.btnRefresh.addEventListener('click', listCameras);
-  els.btnFlip.addEventListener('click', flipCamera);
+  // Flip: rota al siguiente device y reinicia
+  if (els.btnFlip) els.btnFlip.addEventListener('click', async () => {
+    if (devices.length <= 1) { setMsg('Sólo hay una cámara disponible.', 'error'); return; }
+    currentCamIndex = (currentCamIndex + 1) % devices.length;
+    els.camSel.value = devices[currentCamIndex].id;
+    await restart();
+  });
+  // Cambio manual en selector
   els.camSel.addEventListener('change', async () => {
-    // Si cambias manualmente en el selector, guarda índice y reinicia si estaba corriendo
     const id = els.camSel.value;
     const idx = devices.findIndex(d => d.id === id);
     if (idx >= 0) currentCamIndex = idx;
